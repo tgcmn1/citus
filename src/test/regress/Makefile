@@ -43,7 +43,7 @@ output_files := $(patsubst $(citus_abs_srcdir)/output/%.source,expected/%.out, $
 # intermediate, for muscle memory backward compatibility.
 check: check-full
 # check-full triggers all tests that ought to be run routinely
-check-full: check-multi check-multi-mx check-multi-1 check-worker check-operations check-follower-cluster check-isolation check-failure
+check-full: check-multi check-multi-mx check-multi-1 check-worker check-operations check-follower-cluster check-isolation check-failure check-columnar check-columnar-isolation check-pg-upgrade check-arbitrary-configs check-citus-upgrade check-citus-upgrade-mixed check-citus-upgrade-local check-citus-upgrade-mixed-local
 
 
 ISOLATION_DEPDIR=.deps/isolation
