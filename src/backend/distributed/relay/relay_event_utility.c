@@ -381,7 +381,7 @@ RelayEventExtendNames(Node *parseTree, char *schemaName, uint64 shardId)
 				/* prefix with schema name if it is not added already */
 				if (relationSchemaNameValue == NULL)
 				{
-					Value *schemaNameValue = makeString(pstrdup(schemaName));
+					String *schemaNameValue = makeString(pstrdup(schemaName));
 					relationNameList = lcons(schemaNameValue, relationNameList);
 				}
 

@@ -3264,7 +3264,7 @@ MakeDummyColumnString(int dummyColumnId)
 {
 	StringInfo dummyColumnStringInfo = makeStringInfo();
 	appendStringInfo(dummyColumnStringInfo, "column%d", dummyColumnId);
-	Value *dummyColumnString = makeString(dummyColumnStringInfo->data);
+	String *dummyColumnString = makeString(dummyColumnStringInfo->data);
 
 	return dummyColumnString;
 }

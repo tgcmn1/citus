@@ -150,7 +150,7 @@ PostprocessAlterRoleStmt(Node *node, const char *queryString)
 
 			if (encryptedPassword != NULL)
 			{
-				Value *encryptedPasswordValue = makeString((char *) encryptedPassword);
+				String *encryptedPasswordValue = makeString((char *) encryptedPassword);
 				option->arg = (Node *) encryptedPasswordValue;
 			}
 			else

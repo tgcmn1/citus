@@ -2844,8 +2844,8 @@ CurrentUserName(void)
 Oid
 LookupTypeOid(char *schemaNameSting, char *typeNameString)
 {
-	Value *schemaName = makeString(schemaNameSting);
-	Value *typeName = makeString(typeNameString);
+	String *schemaName = makeString(schemaNameSting);
+	String *typeName = makeString(typeNameString);
 	List *qualifiedName = list_make2(schemaName, typeName);
 	TypeName *enumTypeName = makeTypeNameFromNameList(qualifiedName);
 

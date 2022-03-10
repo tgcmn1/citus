@@ -797,7 +797,7 @@ DerivedColumnNameList(uint32 columnCount, uint64 generatingJobId)
 		appendStringInfo(columnName, UINT64_FORMAT "_", generatingJobId);
 		appendStringInfo(columnName, "%u", columnIndex);
 
-		Value *columnValue = makeString(columnName->data);
+		String *columnValue = makeString(columnName->data);
 		columnNameList = lappend(columnNameList, columnValue);
 	}
 

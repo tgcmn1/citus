@@ -49,67 +49,7 @@ static bool ShouldPropagateDefineCollationStmt(void);
 static char *
 CreateCollationDDLInternal(Oid collationId, Oid *collowner, char **quotedCollationName)
 {
-	StringInfoData collationNameDef;
-
-	HeapTuple heapTuple = SearchSysCache1(COLLOID, ObjectIdGetDatum(collationId));
-	if (!HeapTupleIsValid(heapTuple))
-	{
-		elog(ERROR, "citus cache lookup failed for collation %u", collationId);
-	}
-
-	Form_pg_collation collationForm = (Form_pg_collation) GETSTRUCT(heapTuple);
-	char collprovider = collationForm->collprovider;
-	const char *collcollate = NameStr(collationForm->collcollate);
-	const char *collctype = NameStr(collationForm->collctype);
-	Oid collnamespace = collationForm->collnamespace;
-	const char *collname = NameStr(collationForm->collname);
-	bool collisdeterministic = collationForm->collisdeterministic;
-
-	if (collowner != NULL)
-	{
-		*collowner = collationForm->collowner;
-	}
-
-	ReleaseSysCache(heapTuple);
-	char *schemaName = get_namespace_name(collnamespace);
-	*quotedCollationName = quote_qualified_identifier(schemaName, collname);
-	const char *providerString =
-		collprovider == COLLPROVIDER_DEFAULT ? "default" :
-		collprovider == COLLPROVIDER_ICU ? "icu" :
-		collprovider == COLLPROVIDER_LIBC ? "libc" : NULL;
-
-	if (providerString == NULL)
-	{
-		elog(ERROR, "unknown collation provider: %c", collprovider);
-	}
-
-	initStringInfo(&collationNameDef);
-	appendStringInfo(&collationNameDef,
-					 "CREATE COLLATION %s (provider = '%s'",
-					 *quotedCollationName, providerString);
-
-	if (strcmp(collcollate, collctype))
-	{
-		appendStringInfo(&collationNameDef,
-						 ", locale = %s",
-						 quote_literal_cstr(collcollate));
-	}
-	else
-	{
-		appendStringInfo(&collationNameDef,
-						 ", lc_collate = %s, lc_ctype = %s",
-						 quote_literal_cstr(collcollate),
-						 quote_literal_cstr(collctype));
-	}
-
-	if (!collisdeterministic)
-	{
-		appendStringInfoString(&collationNameDef, ", deterministic = false");
-	}
-
-
-	appendStringInfoChar(&collationNameDef, ')');
-	return collationNameDef.data;
+    ereport(ERROR, (errmsg("dropped for pg15 testing")));
 }
 
 
@@ -460,48 +400,7 @@ AlterCollationSchemaStmtObjectAddress(Node *node, bool missing_ok)
 char *
 GenerateBackupNameForCollationCollision(const ObjectAddress *address)
 {
-	char *newName = palloc0(NAMEDATALEN);
-	char suffix[NAMEDATALEN] = { 0 };
-	int count = 0;
-	char *baseName = get_collation_name(address->objectId);
-	int baseLength = strlen(baseName);
-	HeapTuple collationTuple = SearchSysCache1(COLLOID, address->objectId);
-
-	if (!HeapTupleIsValid(collationTuple))
-	{
-		elog(ERROR, "citus cache lookup failed");
-		return NULL;
-	}
-	Form_pg_collation collationForm = (Form_pg_collation) GETSTRUCT(collationTuple);
-	Value *namespace = makeString(get_namespace_name(collationForm->collnamespace));
-	ReleaseSysCache(collationTuple);
-
-	while (true)
-	{
-		int suffixLength = SafeSnprintf(suffix, NAMEDATALEN - 1, "(citus_backup_%d)",
-										count);
-
-		/* trim the base name at the end to leave space for the suffix and trailing \0 */
-		baseLength = Min(baseLength, NAMEDATALEN - suffixLength - 1);
-
-		/* clear newName before copying the potentially trimmed baseName and suffix */
-		memset(newName, 0, NAMEDATALEN);
-		strncpy_s(newName, NAMEDATALEN, baseName, baseLength);
-		strncpy_s(newName + baseLength, NAMEDATALEN - baseLength, suffix,
-				  suffixLength);
-
-		List *newCollationName = list_make2(namespace, makeString(newName));
-
-		/* don't need to rename if the input arguments don't match */
-		Oid existingCollationId = get_collation_oid(newCollationName, true);
-
-		if (existingCollationId == InvalidOid)
-		{
-			return newName;
-		}
-
-		count++;
-	}
+    ereport(ERROR, (errmsg("dropped for pg15 testing")));
 }
 
 

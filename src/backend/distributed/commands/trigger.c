@@ -642,12 +642,12 @@ DropTriggerEventExtendNames(DropStmt *dropTriggerStmt, char *schemaName, uint64 
 	ExtractDropStmtTriggerAndRelationName(dropTriggerStmt, &triggerName, &relationName);
 
 	AppendShardIdToName(&triggerName, shardId);
-	Value *triggerNameValue = makeString(triggerName);
+	String *triggerNameValue = makeString(triggerName);
 
 	AppendShardIdToName(&relationName, shardId);
-	Value *relationNameValue = makeString(relationName);
+	String *relationNameValue = makeString(relationName);
 
-	Value *schemaNameValue = makeString(pstrdup(schemaName));
+	String *schemaNameValue = makeString(pstrdup(schemaName));
 
 	List *shardTriggerNameList =
 		list_make3(schemaNameValue, relationNameValue, triggerNameValue);
