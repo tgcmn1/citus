@@ -387,11 +387,9 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 	 * addition to the cases where BuildSelectForInsertSelect() does so by
 	 * default.
 	 */
-	bool wrapped = false;
     bool wrapIfContainsGroupBy = true;
 	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
-													 wrapIfContainsGroupBy,
-                                                     &wrapped);
+													 wrapIfContainsGroupBy);
 
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
@@ -404,31 +402,9 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 							 selectRte->subquery->targetList,
 							 targetRelationId);
 
-    if (wrapped)
-    {
-        /* then BuildSelectForInsertSelect did wrap */
-        RangeTblEntry *innerSelectRte = linitial(selectRte->subquery->rtable);
-
-        ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, innerSelectRte);
-        innerSelectRte->subquery->targetList =
-            AddInsertSelectCasts(insertSelectQuery->targetList,
-                                innerSelectRte->subquery->targetList,
-                                targetRelationId);
-
-        List *new_insert_list = NIL;
-        TargetEntry *insert_te = NULL;
-        foreach_ptr(insert_te, insertSelectQuery->targetList)
-        {
-            if (!insert_te->resjunk)
-            {
-                new_insert_list = lappend(new_insert_list, insert_te);
-            }
-        }
-        insertSelectQuery->targetList = new_insert_list;
-    }
-
-	insertSelectQuery->cteList = NIL;
-	DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
+	insertSelectQuery->groupClause = NULL;
+    insertSelectQuery->cteList = NIL;
+    DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
 													  copyObject(selectRte->subquery),
 													  boundParams, hasUnresolvedParams,
 													  plannerRestrictionContext);
@@ -1010,11 +986,6 @@ ReorderInsertSelectTargetLists(Query *originalQuery, RangeTblEntry *insertRte,
 											newSubqueryTargetEntry);
 		}
 
-		/*
-		 * The newly created select target entry cannot be a junk entry since junk
-		 * entries are not in the final target list and we're processing the
-		 * final target list entries.
-		 */
 		Var *newSubqueryVar = makeVarFromTargetEntry(subqueryVarNo,
 													 newSubqueryTargetEntry);
 		TargetEntry *newInsertTargetEntry = makeTargetEntry((Expr *) newSubqueryVar,
@@ -1470,7 +1441,7 @@ CreateNonPushableInsertSelectPlan(uint64 planId, Query *parse, ParamListInfo bou
 	 */
 	bool wrapIfContainsGroupBy = false;
 	Query *selectQuery = BuildSelectForInsertSelect(insertSelectQuery,
-													wrapIfContainsGroupBy, NULL);
+													wrapIfContainsGroupBy);
 
 	selectRte->subquery = selectQuery;
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
