@@ -345,10 +345,62 @@ BuildSelectForInsertSelect(Query *insertSelectQuery, bool wrapIfContainsGroupBy)
  * "SELECT * FROM (...subquery...) citus_insert_select_subquery" query.
  */
 static Query *
-WrapSubquery(Query *subquery)
+WrapSubquery(Query *innerQuery)
 {
+    List *innerQueryTargetList = NIL;
+    List *outerQueryTargetList = NIL;
+
+    int innerResno = 1;
+    int outerResno = 1;
+
+	/* create a target list that matches the SELECT */
+	TargetEntry *innerQueryTargetEntry = NULL;
+	foreach_ptr(innerQueryTargetEntry, innerQuery->targetList)
+	{
+		if (innerQueryTargetEntry->resjunk)
+		{
+            innerQueryTargetEntry->resno = innerResno++;
+            innerQueryTargetList = lappend(innerQueryTargetList, innerQueryTargetEntry);
+			continue;
+		}
+
+		List *targetVarList = pull_var_clause((Node *) innerQueryTargetEntry->expr,
+											  PVC_RECURSE_AGGREGATES);
+        int nvars = list_length(targetVarList);
+        Assert(nvars <= 1);
+
+        Expr *outerQueryExpr = NULL;
+		if (nvars == 1)
+		{
+            innerQueryTargetEntry->resno = innerResno++;
+            innerQueryTargetList = lappend(innerQueryTargetList, innerQueryTargetEntry);
+
+            /*
+             * Exactly 1 entry in FROM.
+             *
+             * Make a Var that points to the corresponding attr of the inner query.
+             */
+            int indexInRangeTable = 1;
+            outerQueryExpr = (Expr *) makeVarFromTargetEntry(indexInRangeTable, innerQueryTargetEntry);
+		}
+		else
+		{
+            /*
+             * Doesn't contain a Var. Then not include this in the inner query
+             * but pull it to the outer query.
+             */
+            outerQueryExpr = innerQueryTargetEntry->expr;
+		}
+
+        TargetEntry *outerQueryTargetEntry = makeTargetEntry(outerQueryExpr, outerResno++,
+                                                             innerQueryTargetEntry->resname,
+                                                             false);
+        outerQueryTargetList = lappend(outerQueryTargetList, outerQueryTargetEntry);
+	}
+
+    innerQuery->targetList = innerQueryTargetList;
+
 	ParseState *pstate = make_parsestate(NULL);
-	List *newTargetList = NIL;
 
 	Query *outerQuery = makeNode(Query);
 	outerQuery->commandType = CMD_SELECT;
@@ -357,7 +409,7 @@ WrapSubquery(Query *subquery)
 	Alias *selectAlias = makeAlias("citus_insert_select_subquery", NIL);
 	RangeTblEntry *newRangeTableEntry = RangeTableEntryFromNSItem(
 		addRangeTableEntryForSubquery(
-			pstate, subquery,
+			pstate, innerQuery,
 			selectAlias, false, true));
 	outerQuery->rtable = list_make1(newRangeTableEntry);
 
@@ -366,32 +418,7 @@ WrapSubquery(Query *subquery)
 	newRangeTableRef->rtindex = 1;
 	outerQuery->jointree = makeFromExpr(list_make1(newRangeTableRef), NULL);
 
-	/* create a target list that matches the SELECT */
-	TargetEntry *selectTargetEntry = NULL;
-	foreach_ptr(selectTargetEntry, subquery->targetList)
-	{
-		/* exactly 1 entry in FROM */
-		int indexInRangeTable = 1;
-
-		if (selectTargetEntry->resjunk)
-		{
-			continue;
-		}
-
-		Var *newSelectVar = makeVar(indexInRangeTable, selectTargetEntry->resno,
-									exprType((Node *) selectTargetEntry->expr),
-									exprTypmod((Node *) selectTargetEntry->expr),
-									exprCollation((Node *) selectTargetEntry->expr), 0);
-
-		TargetEntry *newSelectTargetEntry = makeTargetEntry((Expr *) newSelectVar,
-															selectTargetEntry->resno,
-															selectTargetEntry->resname,
-															selectTargetEntry->resjunk);
-
-		newTargetList = lappend(newTargetList, newSelectTargetEntry);
-	}
-
-	outerQuery->targetList = newTargetList;
+	outerQuery->targetList = outerQueryTargetList;
 
 	return outerQuery;
 }

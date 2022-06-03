@@ -380,6 +380,17 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 	RangeTblEntry *insertRte = ExtractResultRelationRTEOrError(insertSelectQuery);
 	Oid targetRelationId = insertRte->relid;
 
+	/*
+	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
+	 * clause might be pointing to an incorrect range table entry. For this
+	 * reason, need to wrap SELECT query in a subquery in that case, in
+	 * addition to the cases where BuildSelectForInsertSelect() does so by
+	 * default.
+	 */
+	bool wrapIfContainsGroupBy = true;
+	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
+													 wrapIfContainsGroupBy);
+
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
 	/*
@@ -391,16 +402,6 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 							 selectRte->subquery->targetList,
 							 targetRelationId);
 
-	/*
-	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
-	 * clause might be pointing to an incorrect range table entry. For this
-	 * reason, need to wrap SELECT query in a subquery in that case, in
-	 * addition to the cases where BuildSelectForInsertSelect() does so by
-	 * default.
-	 */
-	bool wrapIfContainsGroupBy = true;
-	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
-													 wrapIfContainsGroupBy);
 	insertSelectQuery->cteList = NIL;
 	DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
 													  copyObject(selectRte->subquery),
