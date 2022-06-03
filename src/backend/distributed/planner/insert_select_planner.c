@@ -380,19 +380,6 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 	RangeTblEntry *insertRte = ExtractResultRelationRTEOrError(insertSelectQuery);
 	Oid targetRelationId = insertRte->relid;
 
-	/*
-	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
-	 * clause might be pointing to an incorrect range table entry. For this
-	 * reason, need to wrap SELECT query in a subquery in that case, in
-	 * addition to the cases where BuildSelectForInsertSelect() does so by
-	 * default.
-	 */
-	bool wrapped = false;
-    bool wrapIfContainsGroupBy = true;
-	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
-													 wrapIfContainsGroupBy,
-                                                     &wrapped);
-
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
 	/*
@@ -404,29 +391,16 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 							 selectRte->subquery->targetList,
 							 targetRelationId);
 
-    if (wrapped)
-    {
-        /* then BuildSelectForInsertSelect did wrap */
-        RangeTblEntry *innerSelectRte = linitial(selectRte->subquery->rtable);
-
-        ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, innerSelectRte);
-        innerSelectRte->subquery->targetList =
-            AddInsertSelectCasts(insertSelectQuery->targetList,
-                                innerSelectRte->subquery->targetList,
-                                targetRelationId);
-
-        List *new_insert_list = NIL;
-        TargetEntry *insert_te = NULL;
-        foreach_ptr(insert_te, insertSelectQuery->targetList)
-        {
-            if (!insert_te->resjunk)
-            {
-                new_insert_list = lappend(new_insert_list, insert_te);
-            }
-        }
-        insertSelectQuery->targetList = new_insert_list;
-    }
-
+	/*
+	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
+	 * clause might be pointing to an incorrect range table entry. For this
+	 * reason, need to wrap SELECT query in a subquery in that case, in
+	 * addition to the cases where BuildSelectForInsertSelect() does so by
+	 * default.
+	 */
+	bool wrapIfContainsGroupBy = true;
+	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
+													 wrapIfContainsGroupBy);
 	insertSelectQuery->cteList = NIL;
 	DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
 													  copyObject(selectRte->subquery),
@@ -1015,6 +989,8 @@ ReorderInsertSelectTargetLists(Query *originalQuery, RangeTblEntry *insertRte,
 		 * entries are not in the final target list and we're processing the
 		 * final target list entries.
 		 */
+		Assert(!newSubqueryTargetEntry->resjunk);
+
 		Var *newSubqueryVar = makeVarFromTargetEntry(subqueryVarNo,
 													 newSubqueryTargetEntry);
 		TargetEntry *newInsertTargetEntry = makeTargetEntry((Expr *) newSubqueryVar,
@@ -1470,7 +1446,7 @@ CreateNonPushableInsertSelectPlan(uint64 planId, Query *parse, ParamListInfo bou
 	 */
 	bool wrapIfContainsGroupBy = false;
 	Query *selectQuery = BuildSelectForInsertSelect(insertSelectQuery,
-													wrapIfContainsGroupBy, NULL);
+													wrapIfContainsGroupBy);
 
 	selectRte->subquery = selectQuery;
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
