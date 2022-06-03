@@ -357,24 +357,6 @@ CreateDistributedInsertSelectPlan(Query *originalQuery,
 }
 
 
-static void
-SplitTLEs(List *tles, List **nonResjunkTles, List **resjunkTles)
-{
-    TargetEntry *tle = NULL;
-    foreach_ptr(tle, tles)
-    {
-        if (tle->resjunk)
-        {
-            *resjunkTles = lappend(*resjunkTles, tle);
-        }
-        else
-        {
-            *nonResjunkTles = lappend(*nonResjunkTles, tle);
-        }
-    }
-}
-
-
 /*
  * CreateInsertSelectIntoLocalTablePlan creates the plan for INSERT .. SELECT queries
  * where the selected table is distributed and the inserted table is not.
@@ -398,19 +380,6 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 	RangeTblEntry *insertRte = ExtractResultRelationRTEOrError(insertSelectQuery);
 	Oid targetRelationId = insertRte->relid;
 
-	/*
-	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
-	 * clause might be pointing to an incorrect range table entry. For this
-	 * reason, need to wrap SELECT query in a subquery in that case, in
-	 * addition to the cases where BuildSelectForInsertSelect() does so by
-	 * default.
-	 */
-	bool wrapped = false;
-    bool wrapIfContainsGroupBy = true;
-	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
-													 wrapIfContainsGroupBy,
-                                                     &wrapped);
-
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
 	/*
@@ -422,77 +391,17 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 							 selectRte->subquery->targetList,
 							 targetRelationId);
 
-    if (wrapped)
-    {
-        RangeTblEntry *innerSelectRte = linitial(selectRte->subquery->rtable);
-
-        List *resjunkTLEs = NIL;
-        List *nonResjunkTLEs = NIL;
-        SplitTLEs(innerSelectRte->subquery->targetList, &nonResjunkTLEs, &resjunkTLEs);
-
-        int resno = 1;
-
-        List *newTles = NIL;
-        TargetEntry *te = NULL;
-        foreach_ptr(te, selectRte->subquery->targetList)
-        {
-            List *targetVarList = pull_var_clause((Node *) te->expr,
-                                                PVC_RECURSE_AGGREGATES);
-
-            TargetEntry *newTe = NULL;
-
-            int targetVarCount = list_length(targetVarList);
-            if (targetVarCount == 1)
-            {
-                Var *outerSelectVar = (Var *) linitial(targetVarList);
-                TargetEntry *innerSelectTLE = list_nth(innerSelectRte->subquery->targetList,
-                                                       outerSelectVar->varattno - 1);
-                if (innerSelectTLE->resjunk)
-                {
-                    ereport(ERROR, (errmsg("should not have referred to a resjunk")));
-                }
-
-                newTe = copyObject(innerSelectTLE);
-
-                newTe->resno = resno;
-                newTles = lappend(newTles, newTe);
-
-                outerSelectVar->varattno = list_length(newTles);
-            }
-            else
-            {
-                newTe = makeTargetEntry(te->expr,
-                                                        resno,
-                                                        te->resname,
-                                                        te->resjunk);
-                newTles = lappend(newTles,
-                                                newTe);
-            }
-
-            resno++;
-        }
-
-        innerSelectRte->subquery->targetList = newTles;
-        ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, innerSelectRte);
-        innerSelectRte->subquery->targetList =
-            AddInsertSelectCasts(insertSelectQuery->targetList,
-                                innerSelectRte->subquery->targetList,
-                                targetRelationId);
-
-
-
-        innerSelectRte->subquery->targetList = list_concat(innerSelectRte->subquery->targetList, resjunkTLEs);
-
-        te = NULL;
-        resno = 1;
-        foreach_ptr(te, innerSelectRte->subquery->targetList)
-        {
-            te->resno = resno++;
-        }
-    }
-
+	/*
+	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
+	 * clause might be pointing to an incorrect range table entry. For this
+	 * reason, need to wrap SELECT query in a subquery in that case, in
+	 * addition to the cases where BuildSelectForInsertSelect() does so by
+	 * default.
+	 */
+	bool wrapIfContainsGroupBy = true;
+	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
+													 wrapIfContainsGroupBy);
 	insertSelectQuery->cteList = NIL;
-    insertSelectQuery->groupClause = NULL;
 	DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
 													  copyObject(selectRte->subquery),
 													  boundParams, hasUnresolvedParams,
@@ -1537,7 +1446,7 @@ CreateNonPushableInsertSelectPlan(uint64 planId, Query *parse, ParamListInfo bou
 	 */
 	bool wrapIfContainsGroupBy = false;
 	Query *selectQuery = BuildSelectForInsertSelect(insertSelectQuery,
-													wrapIfContainsGroupBy, NULL);
+													wrapIfContainsGroupBy);
 
 	selectRte->subquery = selectQuery;
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
