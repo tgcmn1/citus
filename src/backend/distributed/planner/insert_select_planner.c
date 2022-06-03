@@ -357,6 +357,110 @@ CreateDistributedInsertSelectPlan(Query *originalQuery,
 }
 
 
+static void
+ReorderSelectTargetLists(RangeTblEntry *outerSelectRte,
+						 RangeTblEntry *innerSelectRte)
+{
+	List *newInnerTargetList = NIL;
+	List *newOuterTargetList = NIL;
+
+	int innerResno = 1;
+	int outerResno = 1;
+
+	Query *innerSelectQuery = innerSelectRte->subquery;
+	Query *outerSelectQuery = outerSelectRte->subquery;
+
+	/*
+	 * We implement the following algorithm for the reoderding:
+	 *  - Iterate over the INSERT target list entries
+	 *    - If the target entry includes a Var, find the corresponding
+	 *      SELECT target entry on the original query and update resno
+	 *    - If the target entry does not include a Var (i.e., defaults
+	 *      or constants), create new target entry and add that to
+	 *      SELECT target list
+	 *    - Create a new INSERT target entry with respect to the new
+	 *      SELECT target entry created.
+	 */
+	TargetEntry *outerTargetEntry = NULL;
+	foreach_ptr(outerTargetEntry, outerSelectQuery->targetList)
+	{
+		List *outerTargetEntryVarList = pull_var_clause((Node *) outerTargetEntry->expr,
+														PVC_RECURSE_AGGREGATES);
+
+		int outerTargetEntryVarCount = list_length(outerTargetEntryVarList);
+		Assert(outerTargetEntryVarCount <= 1);
+
+		TargetEntry *newInnerTargetEntry = NULL;
+		if (outerTargetEntryVarCount == 1)
+		{
+			Var *outerTargetEntryVar = (Var *) linitial(outerTargetEntryVarList);
+			TargetEntry *innerTargetEntry = list_nth(innerSelectQuery->targetList,
+													 outerTargetEntryVar->varattno - 1);
+
+			newInnerTargetEntry = copyObject(innerTargetEntry);
+
+			newInnerTargetEntry->resno = innerResno++;
+			newInnerTargetList = lappend(newInnerTargetList,
+										 newInnerTargetEntry);
+		}
+		else
+		{
+			newInnerTargetEntry = makeTargetEntry(outerTargetEntry->expr,
+												  innerResno++,
+												  outerTargetEntry->resname,
+												  outerTargetEntry->resjunk);
+			newInnerTargetList = lappend(newInnerTargetList,
+										 newInnerTargetEntry);
+		}
+
+		/*
+		 * The newly created select target entry cannot be a junk entry since junk
+		 * entries are not in the final target list and we're processing the
+		 * final target list entries.
+		 */
+		Assert(!newInnerTargetEntry->resjunk);
+
+		Var *newOuterTargetEntryVar = makeVarFromTargetEntry(1, newInnerTargetEntry);
+		TargetEntry *newOuterTargetEntry = makeTargetEntry(
+			(Expr *) newOuterTargetEntryVar,
+			outerResno++,
+			outerTargetEntry->resname,
+			outerTargetEntry->resjunk);
+
+		newOuterTargetList = lappend(newOuterTargetList, newOuterTargetEntry);
+	}
+
+	/*
+	 * if there are any remaining target list entries (i.e., GROUP BY column not on the
+	 * target list of subquery), update the remaining resnos.
+	 */
+	int nInnerSelectQueryTargetEntries = list_length(innerSelectQuery->targetList);
+	for (int i = 0; i < nInnerSelectQueryTargetEntries; ++i)
+	{
+		TargetEntry *innerSelectTargetEntry =
+			list_nth(innerSelectQuery->targetList, i);
+
+		/*
+		 * Skip non-junk entries since we've already processed them above and this
+		 * loop only is intended for junk entries.
+		 */
+		if (!innerSelectTargetEntry->resjunk)
+		{
+			continue;
+		}
+
+		TargetEntry *newInnerSelectTargetEntry = copyObject(innerSelectTargetEntry);
+
+		newInnerSelectTargetEntry->resno = innerResno++;
+		newInnerTargetList = lappend(newInnerTargetList,
+									 newInnerSelectTargetEntry);
+	}
+
+	outerSelectQuery->targetList = newOuterTargetList;
+	innerSelectQuery->targetList = newInnerTargetList;
+}
+
+
 /*
  * CreateInsertSelectIntoLocalTablePlan creates the plan for INSERT .. SELECT queries
  * where the selected table is distributed and the inserted table is not.
@@ -380,6 +484,19 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 	RangeTblEntry *insertRte = ExtractResultRelationRTEOrError(insertSelectQuery);
 	Oid targetRelationId = insertRte->relid;
 
+	/*
+	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
+	 * clause might be pointing to an incorrect range table entry. For this
+	 * reason, need to wrap SELECT query in a subquery in that case, in
+	 * addition to the cases where BuildSelectForInsertSelect() does so by
+	 * default.
+	 */
+	bool wrapIfContainsGroupBy = true;
+	bool wrappedForGroupBy = false;
+	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
+													 wrapIfContainsGroupBy,
+													 &wrappedForGroupBy);
+
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);
 
 	/*
@@ -391,16 +508,22 @@ CreateInsertSelectIntoLocalTablePlan(uint64 planId, Query *originalQuery, ParamL
 							 selectRte->subquery->targetList,
 							 targetRelationId);
 
-	/*
-	 * Due to ReorderInsertSelectTargetLists(), now the Vars in GROUP BY
-	 * clause might be pointing to an incorrect range table entry. For this
-	 * reason, need to wrap SELECT query in a subquery in that case, in
-	 * addition to the cases where BuildSelectForInsertSelect() does so by
-	 * default.
-	 */
-	bool wrapIfContainsGroupBy = true;
-	selectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
-													 wrapIfContainsGroupBy);
+	if (wrappedForGroupBy)
+	{
+		RangeTblEntry *outerSelectRte = selectRte;
+		RangeTblEntry *innerSelectRte = linitial(outerSelectRte->subquery->rtable);
+
+		ReorderSelectTargetLists(outerSelectRte, innerSelectRte);
+
+		List *outerSelectTargetList = outerSelectRte->subquery->targetList;
+
+		outerSelectRte->subquery = innerSelectRte->subquery;
+		outerSelectRte->subquery = BuildSelectForInsertSelect(insertSelectQuery,
+															  wrapIfContainsGroupBy,
+															  NULL);
+		outerSelectRte->subquery->targetList = outerSelectTargetList;
+	}
+
 	insertSelectQuery->cteList = NIL;
 	DistributedPlan *distPlan = CreateDistributedPlan(planId, selectRte->subquery,
 													  copyObject(selectRte->subquery),
@@ -1446,7 +1569,7 @@ CreateNonPushableInsertSelectPlan(uint64 planId, Query *parse, ParamListInfo bou
 	 */
 	bool wrapIfContainsGroupBy = false;
 	Query *selectQuery = BuildSelectForInsertSelect(insertSelectQuery,
-													wrapIfContainsGroupBy);
+													wrapIfContainsGroupBy, NULL);
 
 	selectRte->subquery = selectQuery;
 	ReorderInsertSelectTargetLists(insertSelectQuery, insertRte, selectRte);

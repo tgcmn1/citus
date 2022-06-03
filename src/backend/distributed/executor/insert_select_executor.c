@@ -304,8 +304,14 @@ NonPushableInsertSelectExecScan(CustomScanState *node)
  * If the INSERT...SELECT has CTEs then these are added to the resulting SELECT instead.
  */
 Query *
-BuildSelectForInsertSelect(Query *insertSelectQuery, bool wrapIfContainsGroupBy)
+BuildSelectForInsertSelect(Query *insertSelectQuery, bool wrapIfContainsGroupBy,
+						   bool *wrappedForGroupBy)
 {
+	if (wrappedForGroupBy)
+	{
+		*wrappedForGroupBy = false;
+	}
+
 	RangeTblEntry *selectRte = ExtractSelectRangeTableEntry(insertSelectQuery);
 	Query *selectQuery = selectRte->subquery;
 
@@ -333,6 +339,10 @@ BuildSelectForInsertSelect(Query *insertSelectQuery, bool wrapIfContainsGroupBy)
 	}
 	else if (selectQuery->groupClause != NULL && wrapIfContainsGroupBy)
 	{
+		if (wrappedForGroupBy)
+		{
+			*wrappedForGroupBy = true;
+		}
 		selectQuery = WrapSubquery(selectRte->subquery);
 	}
 
