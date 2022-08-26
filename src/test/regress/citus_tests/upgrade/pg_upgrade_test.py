@@ -64,12 +64,12 @@ def citus_finish_pg_upgrade(pg_path, node_ports):
         utils.psql(pg_path, port, "SELECT citus_finish_pg_upgrade();")
 
 
-def stop_all_databases(old_bindir, new_bindir, old_datadir, new_datadir, config):
+def stop_all_databases(old_bindir, new_bindir, old_datadir, new_datadir, config, no_output=False, parallel=True):
     common.stop_databases(
-        old_bindir, old_datadir, config.node_name_to_ports, config.name
+        old_bindir, old_datadir, config.node_name_to_ports, config.name, no_output, parallel,
     )
     common.stop_databases(
-        new_bindir, new_datadir, config.node_name_to_ports, config.name
+        new_bindir, new_datadir, config.node_name_to_ports, config.name, no_output, parallel,
     )
 
 
@@ -133,5 +133,7 @@ if __name__ == "__main__":
         config.old_datadir,
         config.new_datadir,
         config,
+        no_output=True,
+        parallel=False,
     )
     main(config)
