@@ -2467,7 +2467,8 @@ static void
 ApplicationNameAssignHook(const char *newval, void *extra)
 {
 	ResetHideShardsDecision();
-	ResetCitusBackendType();
+	DetermineCitusBackendType(newval);
+	SetGlobalPID(ExtractGlobalPID(newval));
 	OldApplicationNameAssignHook(newval, extra);
 }
 
