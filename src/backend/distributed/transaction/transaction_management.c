@@ -381,6 +381,9 @@ CoordinatedTransactionCallback(XactEvent event, void *arg)
 			ResetGlobalVariables();
 			ResetRelationAccessHash();
 
+			/* empty the CitusXactCallbackContext to ensure we're not leaking memory */
+			MemoryContextReset(CitusXactCallbackContext);
+
 			/*
 			 * Clear MetadataCache table if we're aborting from a CREATE EXTENSION Citus
 			 * so that any created OIDs from the table are cleared and invalidated. We
