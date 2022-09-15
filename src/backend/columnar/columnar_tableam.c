@@ -734,25 +734,25 @@ columnar_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 	CheckCitusColumnarVersion(ERROR);
 
 	/*
-	 * Setting the original relation's columnar options to the new relation
-	 * so that the original data is compressed with the same option in case of
-	 * an ALTER rewrite
-	 */
-
-	if (slot->tts_tableOid != relation->rd_id)
-	{
-		ColumnarOptions columnarOptions;
-		ReadColumnarOptions(slot->tts_tableOid, &columnarOptions);
-		SetColumnarOptions(relation->rd_id, &columnarOptions);
-	}
-
-	/*
 	 * columnar_init_write_state allocates the write state in a longer
 	 * lasting context, so no need to worry about it.
 	 */
 	ColumnarWriteState *writeState = columnar_init_write_state(relation,
 															   RelationGetDescr(relation),
 															   GetCurrentSubTransactionId());
+
+	/*
+	 * Setting the original relation's columnar options to the new relation
+	 * so that the original data is compressed with the same option in case of
+	 * an ALTER rewrite
+	 */
+	if (slot->tts_tableOid != relation->rd_id)
+	{
+		ColumnarOptions columnarOptions;
+		ReadColumnarOptions(slot->tts_tableOid, &columnarOptions);
+		ColumnarSetWriteStateOptions(writeState, columnarOptions);
+	}
+
 	MemoryContext oldContext = MemoryContextSwitchTo(ColumnarWritePerTupleContext(
 														 writeState));
 
