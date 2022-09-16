@@ -106,11 +106,21 @@ StartRemoteTransactionBegin(struct MultiConnection *connection)
 		appendStringInfoString(beginAndSetDistributedTransactionId, activeSetStmts->data);
 	}
 
+	char *assignDistributedTransactionIdCommand = AssignDistributedTransactionIdCommand();
+
 	/* add SELECT assign_distributed_transaction_id ... */
 	appendStringInfoString(beginAndSetDistributedTransactionId,
-						   AssignDistributedTransactionIdCommand());
+						   assignDistributedTransactionIdCommand);
 
-	if (!SendRemoteCommand(connection, beginAndSetDistributedTransactionId->data))
+	pfree(assignDistributedTransactionIdCommand);
+
+	bool success = SendRemoteCommand(connection,
+									 beginAndSetDistributedTransactionId->data);
+
+	pfree(beginAndSetDistributedTransactionId->data);
+	pfree(beginAndSetDistributedTransactionId);
+
+	if (!success)
 	{
 		const bool raiseErrors = true;
 
@@ -169,7 +179,11 @@ AssignDistributedTransactionIdCommand(void)
 					 distributedTransactionId->transactionNumber,
 					 timestamp);
 
-	return assignDistributedTransactionId->data;
+	/* free the StringInfo but not the buffer itself */
+	char *command = assignDistributedTransactionId->data;
+	pfree(assignDistributedTransactionId);
+
+	return command;
 }
 
 
@@ -268,16 +282,21 @@ StartRemoteTransactionCommit(MultiConnection *connection)
 	}
 	else if (transaction->transactionState == REMOTE_TRANS_PREPARED)
 	{
-		/* commit the prepared transaction */
-		StringInfoData command;
-
-		initStringInfo(&command);
-		appendStringInfo(&command, "COMMIT PREPARED %s",
-						 quote_literal_cstr(transaction->preparedName));
+		/*
+		 * Commit the prepared transaction.
+		 *
+		 * We need to allocate 148 bytes for command buffer (including '\0'):
+		 *  - len("COMMIT PREPARED ") = 16
+		 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
+		 */
+		char command[148];
+		char *quotedPrepName = quote_literal_cstr(transaction->preparedName);
+		SafeSnprintf(command, sizeof(command), "COMMIT PREPARED %s", quotedPrepName);
+		pfree(quotedPrepName);
 
 		transaction->transactionState = REMOTE_TRANS_2PC_COMMITTING;
 
-		if (!SendRemoteCommand(connection, command.data))
+		if (!SendRemoteCommand(connection, command))
 		{
 			HandleRemoteTransactionConnectionError(connection, raiseErrors);
 		}
@@ -395,16 +414,22 @@ StartRemoteTransactionAbort(MultiConnection *connection)
 	if (transaction->transactionState == REMOTE_TRANS_PREPARING ||
 		transaction->transactionState == REMOTE_TRANS_PREPARED)
 	{
-		StringInfoData command;
-
-		/* await PREPARE TRANSACTION results, closing the connection would leave it dangling */
 		ForgetResults(connection);
 
-		initStringInfo(&command);
-		appendStringInfo(&command, "ROLLBACK PREPARED %s",
-						 quote_literal_cstr(transaction->preparedName));
+		/*
+		 * Await PREPARE TRANSACTION results, closing the connection would leave it dangling.
+		 *
+		 * We need to allocate 150 bytes for command buffer (including '\0'):
+		 *  - len("ROLLBACK PREPARED ") = 18
+		 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
+		 */
 
-		if (!SendRemoteCommand(connection, command.data))
+		char command[150];
+		char *quotedPrepName = quote_literal_cstr(transaction->preparedName);
+		SafeSnprintf(command, sizeof(command), "ROLLBACK PREPARED %s", quotedPrepName);
+		pfree(quotedPrepName);
+
+		if (!SendRemoteCommand(connection, command))
 		{
 			HandleRemoteTransactionConnectionError(connection, raiseErrors);
 		}
@@ -498,7 +523,6 @@ void
 StartRemoteTransactionPrepare(struct MultiConnection *connection)
 {
 	RemoteTransaction *transaction = &connection->remoteTransaction;
-	StringInfoData command;
 	const bool raiseErrors = true;
 
 	/* can't prepare a nonexistant transaction */
@@ -519,11 +543,20 @@ StartRemoteTransactionPrepare(struct MultiConnection *connection)
 		LogTransactionRecord(workerNode->groupId, transaction->preparedName);
 	}
 
-	initStringInfo(&command);
-	appendStringInfo(&command, "PREPARE TRANSACTION %s",
-					 quote_literal_cstr(transaction->preparedName));
+	/*
+	 * Await PREPARE TRANSACTION results, closing the connection would leave it dangling.
+	 *
+	 * We need to allocate 152 bytes for command buffer (including '\0'):
+	 *  - len("PREPARE TRANSACTION ") = 20
+	 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
+	 */
 
-	if (!SendRemoteCommand(connection, command.data))
+	char command[152];
+	char *quotedPrepName = quote_literal_cstr(transaction->preparedName);
+	SafeSnprintf(command, sizeof(command), "PREPARE TRANSACTION %s", quotedPrepName);
+	pfree(quotedPrepName);
+
+	if (!SendRemoteCommand(connection, command))
 	{
 		HandleRemoteTransactionConnectionError(connection, raiseErrors);
 	}
@@ -848,6 +881,8 @@ CoordinatedRemoteTransactionsPrepare(void)
 	}
 
 	CurrentCoordinatedTransactionState = COORD_TRANS_PREPARED;
+
+	list_free(connectionList);
 }
 
 
@@ -912,6 +947,8 @@ CoordinatedRemoteTransactionsCommit(void)
 
 		FinishRemoteTransactionCommit(connection);
 	}
+
+	list_free(connectionList);
 }
 
 
@@ -965,6 +1002,8 @@ CoordinatedRemoteTransactionsAbort(void)
 
 		FinishRemoteTransactionAbort(connection);
 	}
+
+	list_free(connectionList);
 }
 
 
@@ -1015,6 +1054,8 @@ CoordinatedRemoteTransactionsSavepointBegin(SubTransactionId subId)
 			transaction->lastSuccessfulSubXact = subId;
 		}
 	}
+
+	list_free(connectionList);
 }
 
 
@@ -1060,6 +1101,8 @@ CoordinatedRemoteTransactionsSavepointRelease(SubTransactionId subId)
 
 		FinishRemoteTransactionSavepointRelease(connection, subId);
 	}
+
+	list_free(connectionList);
 }
 
 
@@ -1141,6 +1184,8 @@ CoordinatedRemoteTransactionsSavepointRollback(SubTransactionId subId)
 		 */
 		UnclaimConnection(connection);
 	}
+
+	list_free(connectionList);
 }
 
 
@@ -1152,10 +1197,17 @@ static void
 StartRemoteTransactionSavepointBegin(MultiConnection *connection, SubTransactionId subId)
 {
 	const bool raiseErrors = true;
-	StringInfo savepointCommand = makeStringInfo();
-	appendStringInfo(savepointCommand, "SAVEPOINT savepoint_%u", subId);
 
-	if (!SendRemoteCommand(connection, savepointCommand->data))
+	/*
+	 * We need to allocate 31 bytes for command buffer (including '\0'):
+	 *  - len("SAVEPOINT savepoint_") = 20
+	 *  - maximum length of str(subId) = 10
+	 */
+	char savepointCommand[31];
+	SafeSnprintf(savepointCommand, sizeof(savepointCommand), "SAVEPOINT savepoint_%u",
+				 subId);
+
+	if (!SendRemoteCommand(connection, savepointCommand))
 	{
 		HandleRemoteTransactionConnectionError(connection, raiseErrors);
 	}
@@ -1191,10 +1243,17 @@ StartRemoteTransactionSavepointRelease(MultiConnection *connection,
 									   SubTransactionId subId)
 {
 	const bool raiseErrors = true;
-	StringInfo savepointCommand = makeStringInfo();
-	appendStringInfo(savepointCommand, "RELEASE SAVEPOINT savepoint_%u", subId);
 
-	if (!SendRemoteCommand(connection, savepointCommand->data))
+	/*
+	 * We need to allocate 39 bytes for command buffer (including '\0'):
+	 *  - len("RELEASE SAVEPOINT savepoint_") = 28
+	 *  - maximum length of str(subId) = 10
+	 */
+	char savepointCommand[39];
+	SafeSnprintf(savepointCommand, sizeof(savepointCommand),
+				 "RELEASE SAVEPOINT savepoint_%u", subId);
+
+	if (!SendRemoteCommand(connection, savepointCommand))
 	{
 		HandleRemoteTransactionConnectionError(connection, raiseErrors);
 	}
@@ -1231,10 +1290,17 @@ StartRemoteTransactionSavepointRollback(MultiConnection *connection,
 										SubTransactionId subId)
 {
 	const bool raiseErrors = false;
-	StringInfo savepointCommand = makeStringInfo();
-	appendStringInfo(savepointCommand, "ROLLBACK TO SAVEPOINT savepoint_%u", subId);
 
-	if (!SendRemoteCommand(connection, savepointCommand->data))
+	/*
+	 * We need to allocate 43 bytes for command buffer (including '\0'):
+	 *  - len("ROLLBACK TO SAVEPOINT savepoint_") = 32
+	 *  - maximum length of str(subId) = 10
+	 */
+	char savepointCommand[43];
+	SafeSnprintf(savepointCommand, sizeof(savepointCommand),
+				 "ROLLBACK TO SAVEPOINT savepoint_%u", subId);
+
+	if (!SendRemoteCommand(connection, savepointCommand))
 	{
 		HandleRemoteTransactionConnectionError(connection, raiseErrors);
 	}
