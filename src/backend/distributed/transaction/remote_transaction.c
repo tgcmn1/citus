@@ -417,13 +417,10 @@ StartRemoteTransactionAbort(MultiConnection *connection)
 		ForgetResults(connection);
 
 		/*
-		 * Await PREPARE TRANSACTION results, closing the connection would leave it dangling.
-		 *
 		 * We need to allocate 150 bytes for command buffer (including '\0'):
 		 *  - len("ROLLBACK PREPARED ") = 18
 		 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
 		 */
-
 		char command[150];
 		char *quotedPrepName = quote_literal_cstr(transaction->preparedName);
 		SafeSnprintf(command, sizeof(command), "ROLLBACK PREPARED %s", quotedPrepName);
@@ -544,13 +541,10 @@ StartRemoteTransactionPrepare(struct MultiConnection *connection)
 	}
 
 	/*
-	 * Await PREPARE TRANSACTION results, closing the connection would leave it dangling.
-	 *
 	 * We need to allocate 152 bytes for command buffer (including '\0'):
 	 *  - len("PREPARE TRANSACTION ") = 20
 	 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
 	 */
-
 	char command[152];
 	char *quotedPrepName = quote_literal_cstr(transaction->preparedName);
 	SafeSnprintf(command, sizeof(command), "PREPARE TRANSACTION %s", quotedPrepName);
