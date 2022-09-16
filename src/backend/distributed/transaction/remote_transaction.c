@@ -418,7 +418,7 @@ StartRemoteTransactionAbort(MultiConnection *connection)
 
 		/*
 		 * Await PREPARE TRANSACTION results, closing the connection would leave it dangling.
-		 * 
+		 *
 		 * We need to allocate 150 bytes for command buffer (including '\0'):
 		 *  - len("ROLLBACK PREPARED ") = 18
 		 *  - maximum quoted length of transaction->preparedName = 2 * 64 + 3 = 131
