@@ -167,9 +167,11 @@ step "s7-get-progress"
 		sourcename,
 		sourceport,
 		source_shard_size,
+		source_lsn,
 		targetname,
 		targetport,
 		target_shard_size,
+		target_lsn,
 		progress,
 		operation_type
 	FROM get_rebalance_progress();

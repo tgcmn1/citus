@@ -39,6 +39,7 @@
 #include "distributed/metadata_cache.h"
 #include "distributed/metadata_utility.h"
 #include "distributed/multi_client_executor.h"
+#include "distributed/multi_logical_replication.h"
 #include "distributed/multi_progress.h"
 #include "distributed/multi_server_executor.h"
 #include "distributed/pg_dist_rebalance_strategy.h"
@@ -60,6 +61,7 @@
 #include "utils/json.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pg_lsn.h"
 #include "utils/syscache.h"
 #include "common/hashfn.h"
 
@@ -166,6 +168,7 @@ typedef struct ShardStatistics
 
 	/* The shard its size in bytes. */
 	uint64 totalSize;
+	XLogRecPtr shardLSN;
 } ShardStatistics;
 
 /*
@@ -246,6 +249,8 @@ static HTAB * GetMovedShardIdsByWorker(PlacementUpdateEventProgress *steps,
 									   int stepCount, bool fromSource);
 static uint64 WorkerShardSize(HTAB *workerShardStatistics,
 							  char *workerName, int workerPort, uint64 shardId);
+static XLogRecPtr WorkerShardLSN(HTAB *workerShardStatisticsHash, char *workerName,
+								 int workerPort, uint64 shardId);
 static void AddToWorkerShardIdSet(HTAB *shardsByWorker, char *workerName, int workerPort,
 								  uint64 shardId);
 static HTAB * BuildShardSizesHash(ProgressMonitorData *monitor, HTAB *shardStatistics);
@@ -1232,6 +1237,11 @@ get_rebalance_progress(PG_FUNCTION_ARGS)
 			uint64 targetSize = WorkerShardSize(shardStatistics, step->targetName,
 												step->targetPort, shardId);
 
+			XLogRecPtr sourceLSN = WorkerShardLSN(shardStatistics, step->sourceName,
+												  step->sourcePort, shardId);
+			XLogRecPtr targetLSN = WorkerShardLSN(shardStatistics, step->targetName,
+												  step->targetPort, shardId);
+
 			uint64 shardSize = 0;
 			ShardStatistics *shardSizesStat =
 				hash_search(shardSizes, &shardId, HASH_FIND, NULL);
@@ -1240,8 +1250,8 @@ get_rebalance_progress(PG_FUNCTION_ARGS)
 				shardSize = shardSizesStat->totalSize;
 			}
 
-			Datum values[12];
-			bool nulls[12];
+			Datum values[14];
+			bool nulls[14];
 
 			memset(values, 0, sizeof(values));
 			memset(nulls, 0, sizeof(nulls));
@@ -1259,6 +1269,8 @@ get_rebalance_progress(PG_FUNCTION_ARGS)
 			values[10] = UInt64GetDatum(targetSize);
 			values[11] = PointerGetDatum(
 				cstring_to_text(PlacementUpdateTypeNames[step->updateType]));
+			values[12] = LSNGetDatum(sourceLSN);
+			values[13] = LSNGetDatum(targetLSN);
 
 			tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
@@ -1392,6 +1404,41 @@ WorkerShardSize(HTAB *workerShardStatisticsHash, char *workerName, int workerPor
 }
 
 
+static XLogRecPtr
+WorkerShardLSN(HTAB *workerShardStatisticsHash, char *workerName, int workerPort,
+			   uint64 shardId)
+{
+	WorkerHashKey workerKey = { 0 };
+	strlcpy(workerKey.hostname, workerName, MAX_NODE_LENGTH);
+	workerKey.port = workerPort;
+
+	WorkerShardStatistics *workerStats =
+		hash_search(workerShardStatisticsHash, &workerKey, HASH_FIND, NULL);
+	if (!workerStats)
+	{
+		return 0;
+	}
+
+	ShardStatistics *shardStats =
+		hash_search(workerStats->statistics, &shardId, HASH_FIND, NULL);
+	if (!shardStats)
+	{
+		return 0;
+	}
+
+	if (shardStats->shardLSN == InvalidXLogRecPtr)
+	{
+		int connectionFlags = 0;
+		MultiConnection *connection = GetNodeConnection(connectionFlags,
+														workerName,
+														workerPort);
+		shardStats->shardLSN = GetRemoteLogPosition(connection);
+	}
+
+	return shardStats->shardLSN;
+}
+
+
 /*
  * BuildWorkerShardStatisticsHash returns a shard id -> shard statistics hash containing
  * sizes of shards on the source node and destination node.
@@ -1481,15 +1528,17 @@ GetShardStatistics(MultiConnection *connection, HTAB *shardIds)
 	appendStringInfoString(query, "))");
 	appendStringInfoString(
 		query,
-		" SELECT shard_id, coalesce(pg_total_relation_size(tables.relid),0)"
+		" SELECT shard_id, coalesce(pg_total_relation_size(tables.relid),0), tables.lsn"
 
 		/* for each shard in shardIds */
 		" FROM shard_names"
 
 		/* check if its name can be found in pg_class, if so return size */
 		" LEFT JOIN"
-		" (SELECT c.oid AS relid, c.relname, n.nspname"
-		" FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace) tables"
+		" (SELECT c.oid AS relid, c.relname, n.nspname, ss.latest_end_lsn AS lsn"
+		" FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+		" LEFT JOIN pg_subscription_rel sr ON sr.srrelid = c.oid "
+		" LEFT JOIN pg_stat_subscription ss ON sr.srsubid = ss.subid) tables"
 		" ON tables.relname = shard_names.table_name AND"
 		" tables.nspname = shard_names.schema_name ");
 
@@ -1530,6 +1579,19 @@ GetShardStatistics(MultiConnection *connection, HTAB *shardIds)
 		ShardStatistics *statistics =
 			hash_search(shardStatistics, &shardId, HASH_ENTER, NULL);
 		statistics->totalSize = totalSize;
+
+		if (PQgetisnull(result, rowIndex, 2))
+		{
+			statistics->shardLSN = InvalidXLogRecPtr;
+		}
+		else
+		{
+			char *LSNString = PQgetvalue(result, rowIndex, 2);
+			Datum LSNDatum = DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
+													 CStringGetDatum(
+														 LSNString));
+			statistics->shardLSN = DatumGetLSN(LSNDatum);
+		}
 	}
 
 	PQclear(result);
