@@ -269,6 +269,25 @@ SELECT * FROM numeric_scale_gt_precision ORDER BY 1;
 -- verify we can route queries to the right shards
 SELECT * FROM numeric_scale_gt_precision WHERE numeric_column=0.027;
 
+-- test repartition joins on tables distributed on numeric types with negative scale
+CREATE TABLE numeric_repartition_first(id int, numeric_column numeric(2,3));
+CREATE TABLE numeric_repartition_second(id int, numeric_column numeric(2,3));
+
+-- populate tables
+INSERT INTO numeric_repartition_first SELECT x, x FROM generate_series (0.01234, 0.09, 0.005) x;
+INSERT INTO numeric_repartition_second SELECT x, x FROM generate_series (0.01234, 0.09, 0.005) x;
+
+-- distribute tables on different columns
+SELECT * FROM create_distributed_table('numeric_repartition_first','id');
+SELECT * FROM create_distributed_table('numeric_repartition_second','numeric_column');
+
+-- The count should be 16, as both tables contain 16 rows
+SET citus.enable_repartition_joins TO 1;
+SELECT count(*)
+FROM numeric_repartition_first f,
+     numeric_repartition_second s
+WHERE f.numeric_column = s.numeric_column;
+
 -- test new regex functions
 -- print order comments that contain the word `fluffily` at least twice
 SELECT o_comment FROM public.orders WHERE regexp_count(o_comment, 'FluFFily', 1, 'i')>=2 ORDER BY 1;
@@ -472,7 +491,7 @@ SET search_path TO pg15;
 
 -- test NULL NOT DISTINCT clauses
 -- set the next shard id so that the error messages are easier to maintain
-SET citus.next_shard_id TO 960050;
+SET citus.next_shard_id TO 960150;
 CREATE TABLE null_distinct_test(id INT, c1 INT, c2 INT, c3 VARCHAR(10)) ;
 SELECT create_distributed_table('null_distinct_test', 'id');
 
