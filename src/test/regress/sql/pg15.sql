@@ -270,19 +270,41 @@ SELECT * FROM numeric_scale_gt_precision ORDER BY 1;
 SELECT * FROM numeric_scale_gt_precision WHERE numeric_column=0.027;
 
 -- test repartition joins on tables distributed on numeric types with negative scale
-CREATE TABLE numeric_repartition_first(id int, numeric_column numeric(2,3));
-CREATE TABLE numeric_repartition_second(id int, numeric_column numeric(2,3));
+CREATE TABLE numeric_repartition_first(id int, data int, numeric_column numeric(3,-1));
+CREATE TABLE numeric_repartition_second(id int, data int, numeric_column numeric(3,-1));
 
 -- populate tables
-INSERT INTO numeric_repartition_first SELECT x, x FROM generate_series (0.01234, 0.09, 0.005) x;
-INSERT INTO numeric_repartition_second SELECT x, x FROM generate_series (0.01234, 0.09, 0.005) x;
+INSERT INTO numeric_repartition_first SELECT x, x, x FROM generate_series (100, 115) x;
+INSERT INTO numeric_repartition_second SELECT x, x, x FROM generate_series (100, 115) x;
 
--- distribute tables on different columns
+-- Run some queries before distributing the tables to see results in vanilla PG
+SELECT count(*)
+FROM numeric_repartition_first f,
+     numeric_repartition_second s
+WHERE f.id = s.numeric_column;
+
+SELECT count(*)
+FROM numeric_repartition_first f,
+     numeric_repartition_second s
+WHERE f.numeric_column = s.numeric_column;
+
+-- distribute tables and re-run the same queries
 SELECT * FROM create_distributed_table('numeric_repartition_first','id');
-SELECT * FROM create_distributed_table('numeric_repartition_second','numeric_column');
+SELECT * FROM create_distributed_table('numeric_repartition_second','id');
 
--- The count should be 16, as both tables contain 16 rows
 SET citus.enable_repartition_joins TO 1;
+
+SELECT count(*)
+FROM numeric_repartition_first f,
+     numeric_repartition_second s
+WHERE f.id = s.numeric_column;
+
+-- show that the same query works if we use an int column instead of a numeric on the filter clause
+SELECT count(*)
+FROM numeric_repartition_first f,
+     numeric_repartition_second s
+WHERE f.id = s.data;
+
 SELECT count(*)
 FROM numeric_repartition_first f,
      numeric_repartition_second s
