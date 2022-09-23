@@ -66,6 +66,7 @@
 #include "utils/syscache.h"
 
 #define STR_ERRCODE_UNDEFINED_OBJECT "42704"
+#define STR_ERRCODE_OBJECT_IN_USE "55006"
 
 
 #define REPLICATION_SLOT_CATALOG_TABLE_NAME "pg_replication_slots"
@@ -233,6 +234,26 @@ LogicallyReplicateShards(List *shardList, char *sourceNodeName, int sourceNodePo
 		/* only useful for isolation testing, see the function comment for the details */
 		ConflictOnlyWithIsolationTesting();
 
+		/*
+		 * We have to create the primary key (or any other replica identity)
+		 * before the update/delete operations that are queued will be
+		 * replicated. Because if the replica identity does not exist on the
+		 * target, the replication would fail.
+		 *
+		 * So the latest possible moment we could do this is right after the
+		 * initial data COPY, but before enabling the susbcriptions. It might
+		 * seem like a good idea to it after the initial data COPY, since
+		 * it's generally the rule that it's cheaper to build an index at once
+		 * than to create it incrementally. This general rule, is why we create
+		 * all the regular indexes as late during the move as possible.
+		 *
+		 * But as it turns out in practice it's not as clear cut, and we saw a
+		 * speed degradation in the time it takes to move shards when doing the
+		 * replica identity creation after the initial COPY. So, instead we
+		 * keep it before the COPY.
+		 */
+		CreateReplicaIdentities(logicalRepTargetList);
+
 		CopyShardsToNode(sourceNode, targetNode, shardList, snapshot);
 
 		/*
@@ -346,20 +367,6 @@ CompleteNonBlockingShardTransfer(List *shardList,
 								 HTAB *groupedLogicalRepTargetsHash,
 								 LogicalRepType type)
 {
-	/*
-	 * We have to create the primary key (or any other replica identity)
-	 * before the update/delete operations that are queued will be
-	 * replicated. Because if the replica identity does not exist on the
-	 * target, the replication would fail.
-	 *
-	 * So we it right after the initial data COPY, but before enabling the
-	 * susbcriptions. We do it at this latest possible moment, because its
-	 * much cheaper to build an index at once than to create it
-	 * incrementally. So this way we create the primary key index in one go
-	 * for all data from the initial COPY.
-	 */
-	CreateReplicaIdentities(logicalRepTargetList);
-
 	/* Start applying the changes from the replication slots to catch up. */
 	EnableSubscriptions(logicalRepTargetList);
 
@@ -1281,18 +1288,64 @@ DropPublications(MultiConnection *sourceConnection, HTAB *publicationInfoHash)
 
 /*
  * DropReplicationSlot drops the replication slot with the given name
- * if it exists.
+ * if it exists. It retries if the command fails with an OBJECT_IN_USE error.
  */
 static void
 DropReplicationSlot(MultiConnection *connection, char *replicationSlotName)
 {
-	ExecuteCriticalRemoteCommand(
-		connection,
-		psprintf(
-			"select pg_drop_replication_slot(slot_name) from "
-			REPLICATION_SLOT_CATALOG_TABLE_NAME
-			" where slot_name = %s",
-			quote_literal_cstr(replicationSlotName)));
+	int maxSecondsToTryDropping = 20;
+	bool raiseInterrupts = true;
+	PGresult *result = NULL;
+
+	/* we'll retry in case of an OBJECT_IN_USE error */
+	while (maxSecondsToTryDropping >= 0)
+	{
+		int querySent = SendRemoteCommand(
+			connection,
+			psprintf(
+				"select pg_drop_replication_slot(slot_name) from "
+				REPLICATION_SLOT_CATALOG_TABLE_NAME
+				" where slot_name = %s",
+				quote_literal_cstr(replicationSlotName))
+			);
+
+		if (querySent == 0)
+		{
+			ReportConnectionError(connection, ERROR);
+		}
+
+		result = GetRemoteCommandResult(connection, raiseInterrupts);
+
+		if (IsResponseOK(result))
+		{
+			/* no error, we are good to go */
+			break;
+		}
+
+		char *errorcode = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+		if (errorcode != NULL && strcmp(errorcode, STR_ERRCODE_OBJECT_IN_USE) == 0 &&
+			maxSecondsToTryDropping > 0)
+		{
+			/* retry dropping the replication slot after sleeping for one sec */
+			maxSecondsToTryDropping--;
+			pg_usleep(1000);
+		}
+		else
+		{
+			/*
+			 * Report error if:
+			 * - Error code is not 55006 (Object In Use)
+			 * - Or, we have made enough number of retries (currently 20), but didn't work
+			 */
+			ReportResultError(connection, result, ERROR);
+		}
+
+		PQclear(result);
+		ForgetResults(connection);
+	}
+
+	PQclear(result);
+	ForgetResults(connection);
 }
 
 
