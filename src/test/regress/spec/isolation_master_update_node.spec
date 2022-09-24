@@ -1,3 +1,25 @@
+//step s1-abort: ABORT;
+//FATAL:  terminating connection due to administrator command
+//FATAL:  terminating connection due to administrator command
+//SSL connection has been closed unexpectedly -- pg14
+
+
+//step s1-abort: ABORT;
+//FATAL:  terminating connection due to administrator command
+//SSL connection has been closed unexpectedly -- pg15
+
+
+//step s1-abort: ABORT;
+//FATAL:  terminating connection due to administrator command
+//server closed the connection unexpectedly  -- pg13
+
+
+//-- extraa
+//step s1-abort: ABORT;
+//FATAL:  terminating connection due to administrator command
+//FATAL:  terminating connection due to administrator command
+//SSL connection has been closed unexpectedly
+//server closed the connection unexpectedly -- pg14
 setup
 {
     -- revert back to pg_isolation_test_session_is_blocked until the tests are fixed
