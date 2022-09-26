@@ -113,6 +113,7 @@ CleanupWriteStateMap(void *arg)
 
 ColumnarWriteState *
 columnar_init_write_state(Relation relation, TupleDesc tupdesc,
+						  Oid tupSlotRelationId,
 						  SubTransactionId currentSubXid)
 {
 	bool found;
@@ -176,7 +177,11 @@ columnar_init_write_state(Relation relation, TupleDesc tupdesc,
 	MemoryContext oldContext = MemoryContextSwitchTo(WriteStateContext);
 
 	ColumnarOptions columnarOptions = { 0 };
-	ReadColumnarOptions(relation->rd_id, &columnarOptions);
+
+	/* In case of an ALTER command, we set the original table's columnar options
+	 * to the new table. Otherwise, we are reading the relation table's options.
+	 */
+	ReadColumnarOptions(tupSlotRelationId, &columnarOptions);
 
 	SubXidWriteState *stackEntry = palloc0(sizeof(SubXidWriteState));
 	stackEntry->writeState = ColumnarBeginWrite(relation->rd_node,
