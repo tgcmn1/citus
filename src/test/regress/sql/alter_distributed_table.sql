@@ -33,6 +33,15 @@ SELECT table_name, citus_table_type, distribution_column, shard_count FROM publi
 SELECT STRING_AGG(table_name::text, ', ' ORDER BY 1) AS "Colocation Groups" FROM public.citus_tables
     WHERE table_name IN ('dist_table', 'colocation_table', 'colocation_table_2') GROUP BY colocation_id ORDER BY 1;
 
+-- test using alter_distributed_table after dropping one column
+ALTER TABLE dist_table DROP COLUMN a;
+SELECT alter_distributed_table('dist_table', shard_count := 7, cascade_to_colocated := false);
+SELECT table_name, citus_table_type, distribution_column, shard_count FROM public.citus_tables
+    WHERE table_name IN ('dist_table', 'colocation_table', 'colocation_table_2');
+SELECT STRING_AGG(table_name::text, ', ' ORDER BY 1) AS "Colocation Groups" FROM public.citus_tables
+    WHERE table_name IN ('dist_table', 'colocation_table', 'colocation_table_2') GROUP BY colocation_id ORDER BY 1;
+ALTER TABLE dist_table ADD COLUMN a int DEFAULT 5;
+
 -- test altering colocation, note that shard count will also change
 SELECT alter_distributed_table('dist_table', colocate_with := 'alter_distributed_table.colocation_table');
 SELECT table_name, citus_table_type, distribution_column, shard_count FROM public.citus_tables
